@@ -494,3 +494,67 @@ describe("GLM value-closer healing", () => {
 		expect(ends[0]?.arguments).toEqual({ path: "a.ts", content });
 	});
 });
+
+describe("GLM orphan tool-call closer healing", () => {
+	const CALL = "<tool_call>read\n<arg_key>path</arg_key>\n<arg_value>a.ts</arg_value>\n</tool_call>";
+
+	function texts(events: readonly InbandScanEvent[]): string {
+		return events
+			.filter((event): event is Extract<InbandScanEvent, { type: "text" }> => event.type === "text")
+			.map(event => event.text)
+			.join("");
+	}
+
+	it("drops an orphan closer immediately after a completed call", () => {
+		const events = feedText("glm", `${CALL}\n</tool_call>\nVisible answer`);
+		const ends = toolEnds(events);
+		expect(ends).toHaveLength(1);
+		expect(ends[0]?.name).toBe("read");
+		expect(texts(events)).toBe("Visible answer");
+	});
+
+	it("drops consecutive orphan closers between call and prose", () => {
+		const events = feedText("glm", `${CALL}\n</tool_call>\n</tool_call>\nVisible`);
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("Visible");
+	});
+
+	it("preserves prose with a literal closer when no orphan follows the call", () => {
+		const events = feedText("glm", `${CALL}\nDone. Later the model wrote </tool_call> in prose.`);
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("\nDone. Later the model wrote </tool_call> in prose.");
+	});
+
+	it("holds a chunk-split orphan closer instead of leaking the partial tag", () => {
+		const scanner = createInbandScanner("glm", { tools: TOOLS, parseThinking: true });
+		const events: InbandScanEvent[] = [];
+		events.push(...scanner.feed(CALL));
+		events.push(...scanner.feed("</tool"));
+		events.push(...scanner.feed("_call>\nDone"));
+		events.push(...scanner.flush());
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("Done");
+	});
+
+	it("preserves whitespace-only prose after a call without an orphan", () => {
+		const events = feedText("glm", `${CALL}\n\n   `);
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("\n\n   ");
+	});
+
+	it("keeps leading whitespace when prose follows without an orphan", () => {
+		const events = feedText("glm", `${CALL}\n\n Done`);
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("\n\n Done");
+	});
+
+	it("heals orphans with parseThinking disabled", () => {
+		const scanner = createInbandScanner("glm", { tools: TOOLS, parseThinking: false });
+		const events: InbandScanEvent[] = [];
+		events.push(...scanner.feed(CALL));
+		events.push(...scanner.feed("\n</tool_call>\nDone"));
+		events.push(...scanner.flush());
+		expect(toolEnds(events)).toHaveLength(1);
+		expect(texts(events)).toBe("Done");
+	});
+});

@@ -58,7 +58,7 @@ const OUTSIDE_TAGS_NO_THINK = [
 ] as const;
 const BODY_TAGS = [ARG_KEY_OPEN, TOOL_CLOSE] as const;
 
-type State = "outside" | "thinking" | "name" | "body" | "key" | "afterkey" | "value";
+type State = "outside" | "afterCall" | "afterCallClose" | "thinking" | "name" | "body" | "key" | "afterkey" | "value";
 
 interface OpenCall {
 	id: string;
@@ -103,6 +103,16 @@ export class GLMInbandScanner implements InbandScanner {
 		while (this.#buffer.length > 0) {
 			if (this.#state === "outside") {
 				if (!this.#consumeOutside(final, events)) break;
+				continue;
+			}
+
+			if (this.#state === "afterCall") {
+				if (!this.#consumeAfterCall(final)) break;
+				continue;
+			}
+
+			if (this.#state === "afterCallClose") {
+				if (!this.#consumeAfterCallClose(final)) break;
 				continue;
 			}
 
@@ -167,6 +177,62 @@ export class GLMInbandScanner implements InbandScanner {
 			return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Consumes the text run immediately following a completed call, before any
+	 * stray closer has been seen. Whitespace here is provisional: it is held
+	 * until the next content proves it ordinary prose (then preserved verbatim)
+	 * or an orphan `</tool_call>` consumes it (then it is dropped).
+	 */
+	#consumeAfterCall(final: boolean): boolean {
+		const at = skipHealWhitespace(this.#buffer, 0);
+		while (at >= 0) {
+			const kind = matchTagPrefix(this.#buffer, at, TOOL_CLOSE);
+			if (kind === "match") {
+				this.#buffer = this.#buffer.slice(at + TOOL_CLOSE.length);
+				this.#state = "afterCallClose";
+				return this.#consumeAfterCallClose(final);
+			}
+			if (kind === "partial" && !final) return false;
+			this.#state = "outside";
+			if (kind === "partial") {
+				// Final flush with nothing but whitespace and no orphan seen:
+				// the whitespace is ordinary trailing text.
+				if (at === this.#buffer.length) break;
+				this.#buffer = "";
+				return false;
+			}
+			break;
+		}
+		if (at < 0) this.#state = "outside";
+		return true;
+	}
+
+	/**
+	 * Continues the post-call run after at least one stray `</tool_call>` was
+	 * dropped: adjacent whitespace and further strays are dropped with it until
+	 * ordinary content resumes the outside scan.
+	 */
+	#consumeAfterCallClose(final: boolean): boolean {
+		this.#skipWhitespace();
+		while (this.#buffer.length > 0) {
+			const kind = matchTagPrefix(this.#buffer, 0, TOOL_CLOSE);
+			if (kind === "match") {
+				this.#buffer = this.#buffer.slice(TOOL_CLOSE.length);
+				this.#skipWhitespace();
+				continue;
+			}
+			if (kind === "partial" && !final) return false;
+			this.#state = "outside";
+			if (kind === "partial") {
+				this.#buffer = "";
+				return false;
+			}
+			return true;
+		}
+		if (final) this.#state = "outside";
+		return false;
 	}
 
 	#consumeThinking(final: boolean, events: InbandScanEvent[]): void {
@@ -348,7 +414,7 @@ export class GLMInbandScanner implements InbandScanner {
 			rawBlock: call.rawBlock,
 		});
 		this.#call = null;
-		this.#state = "outside";
+		this.#state = "afterCall";
 	}
 
 	#dropCall(): void {

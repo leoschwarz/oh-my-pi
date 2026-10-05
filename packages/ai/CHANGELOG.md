@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GLM-family models on gateways that pass protocol markup through (e.g. the Z.AI coding-plan endpoint) occasionally emitting a duplicated closing tool-call tag after a completed call; the stray tag is now dropped instead of appearing in the visible reply.
+
 ## [18.6.1] - 2026-10-04
 
 ### Fixed
